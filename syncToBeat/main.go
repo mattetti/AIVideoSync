@@ -37,6 +37,40 @@ func readKeyframes(filePath string) ([]Keyframe, error) {
 	return keyframes, nil
 }
 
+// getVideoDuration retrieves the duration of the given video file in seconds.
+func getVideoDuration(videoPath string) (float64, error) {
+	// First, check if ffprobe is available
+	ffprobePath, err := checkFFprobeAvailable()
+	if err != nil {
+		return 0, err // ffprobe is not available
+	}
+
+	// Construct the ffprobe command to get the duration of the video
+	cmdArgs := []string{
+		"-v", "error",
+		"-show_entries", "format=duration",
+		"-of", "default=noprint_wrappers=1:nokey=1",
+		videoPath,
+	}
+
+	cmd := exec.Command(ffprobePath, cmdArgs...)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	err = cmd.Run()
+	if err != nil {
+		return 0, fmt.Errorf("ffprobe error: %v", err)
+	}
+
+	// Parse the output to get the duration
+	durationStr := strings.TrimSpace(out.String())
+	duration, err := strconv.ParseFloat(durationStr, 64)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse duration: %v", err)
+	}
+
+	return duration, nil
+}
+
 // checkFFmpegAvailable checks if FFmpeg is installed and available in the PATH.
 // It returns the path to the FFmpeg executable if found, or an error if not found.
 func checkFFmpegAvailable() (string, error) {
@@ -60,6 +94,84 @@ func checkFFmpegAvailable() (string, error) {
 	ffmpegPath := strings.TrimSpace(out.String())
 
 	return ffmpegPath, nil
+}
+
+// checkFFprobeAvailable checks if FFprobe is installed and available in the PATH.
+// It returns the path to the FFprobe executable if found, or an error if not found.
+func checkFFprobeAvailable() (string, error) {
+	var cmd *exec.Cmd
+
+	// Use 'where' on Windows, 'which' on Unix-like systems
+	if runtime.GOOS == "windows" {
+		cmd = exec.Command("where", "ffprobe")
+	} else {
+		cmd = exec.Command("which", "ffprobe")
+	}
+
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	err := cmd.Run()
+	if err != nil {
+		return "", fmt.Errorf("FFprobe is not available: %v", err)
+	}
+
+	// The output will have the path to the ffprobe binary
+	ffprobePath := strings.TrimSpace(out.String())
+
+	return ffprobePath, nil
+}
+
+// Adds a white pulse to a video based on the specified BPM and saves the result to a new file.
+func addPulseToVideo(inputVideoPath string, bpm float64, outputVideoPath string) error {
+	ffmpegPath, err := checkFFmpegAvailable()
+	if err != nil {
+		return fmt.Errorf("ffmpeg is not available: %v", err)
+	}
+
+	totalDuration, err := getVideoDuration(inputVideoPath)
+	if err != nil {
+		return fmt.Errorf("failed to get video duration: %v", err)
+	}
+
+	beatDuration := 60 / bpm
+	numBeats := int(totalDuration / beatDuration)
+
+	// Generate the base filter for the white color source
+	baseFilter := fmt.Sprintf("color=c=white:s=1920x1080:r=25:d=%f[white];", totalDuration)
+
+	// Initialize the filter complex string with the base filter
+	filterComplex := baseFilter
+
+	// Loop to generate overlay filters for each beat
+	for i := 0; i <= numBeats; i++ {
+		start := float64(i) * beatDuration
+		// Create overlay filters for each beat
+		filterComplex += fmt.Sprintf("[0:v][white]overlay='if(between(t,%f,%f),1,0)':shortest=1[v%d];", start, start+0.2, i)
+	}
+
+	// The final video stream label needs to be adjusted according to the last overlay filter applied
+	finalStreamLabel := fmt.Sprintf("[v%d]", numBeats)
+
+	cmdArgs := []string{
+		"-y",
+		"-i", inputVideoPath,
+		"-filter_complex", filterComplex,
+		"-map", finalStreamLabel,
+		"-c:v", "libx264",
+		"-preset", "medium",
+		"-crf", "22",
+		outputVideoPath,
+	}
+
+	cmd := exec.Command(ffmpegPath, cmdArgs...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("error running ffmpeg: %v", err)
+	}
+
+	return nil
 }
 
 func ffmpegAdjustSpeed(bpm float64, originalVideoPath string, audioPath string, outputPath string, keyframes []Keyframe) error {
@@ -260,4 +372,9 @@ func main() {
 		fmt.Println("Failed to sync to beat:", err)
 		log.Fatal(err)
 	}
+
+	// outputPulsePath := fmt.Sprintf("pulsed_%s_sync%.0f.%s", originalVideoFilename, bpm, originalExtension)
+	// if err := addPulseToVideo(outputPath, bpm, outputPulsePath); err != nil {
+	// 	log.Fatalf("Failed to add pulse to video: %v", err)
+	// }
 }
