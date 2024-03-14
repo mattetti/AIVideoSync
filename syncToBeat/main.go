@@ -80,8 +80,10 @@ func ffmpegAdjustSpeed(bpm float64, originalVideoPath string, audioPath string, 
 			continue
 		}
 
-		beatNumber := round(kf.Time / beatDuration)
+		beatNumber := roundToBeat(kf.Time / beatDuration)
 		nearestBeatTime := beatNumber * beatDuration
+
+		targetBeatPosition := roundToBeat(nearestBeatTime / beatDuration)
 
 		segmentDuration := kf.Time - lastTime
 		// Avoid division by zero by ensuring segmentDuration is not zero
@@ -98,9 +100,12 @@ func ffmpegAdjustSpeed(bpm float64, originalVideoPath string, audioPath string, 
 		}
 
 		speedFactor := segmentDuration / adjustedSegmentDuration
-		fmt.Printf("Keyframe %d: Original Time = %f, Nearest Beat Time = %f, Speed Factor = %f\n", i, kf.Time, nearestBeatTime, speedFactor)
+		fmt.Printf("Keyframe %d: %.2fs/%.2f, Nearest Beat: %.2fs/%.2f, Speed Factor = %f\n", i, kf.Time, (kf.Time / beatDuration), nearestBeatTime, targetBeatPosition, speedFactor)
 
 		filter := fmt.Sprintf("[0:v]trim=start=%f:end=%f,setpts=PTS-STARTPTS*%f[v%d]; ", lastTime, kf.Time, speedFactor, i)
+		if Debug {
+			fmt.Println(filter)
+		}
 		filterComplexParts = append(filterComplexParts, filter)
 		concatParts = append(concatParts, fmt.Sprintf("[v%d]", i))
 
@@ -128,7 +133,6 @@ func ffmpegAdjustSpeed(bpm float64, originalVideoPath string, audioPath string, 
 		outputPath,
 	}
 
-	// cmdArgs = append(cmdArgs, outputPath)
 	if Debug {
 		log.Println("Running FFmpeg with arguments:", cmdArgs)
 	}
@@ -160,8 +164,6 @@ func ffmpegAdjustSpeed(bpm float64, originalVideoPath string, audioPath string, 
 			"-map", "1:a:0", // Map the audio stream from the second input (the provided audio file)
 		}
 
-		// outputPath isn't just the filename so we need to edit the path to inject a prefix or suffix,
-		// for instance we have .\Scene-009.mp4_sync122.mp4. We need to inject audio_ before the filename.
 		withAudioOutputPath := outputPath
 		dir := filepath.Dir(withAudioOutputPath)
 		filename := filepath.Base(withAudioOutputPath)
@@ -185,9 +187,42 @@ func ffmpegAdjustSpeed(bpm float64, originalVideoPath string, audioPath string, 
 	return nil
 }
 
-// Helper function to round float64 numbers
-func round(f float64) float64 {
-	return math.Round(f)
+func roundToBeat(value float64) float64 {
+	return math.Round(value*100) / 100
+}
+
+// estimateBPM calculates the estimated BPM from a slice of Keyframe structs, adjusting for potential whole bar durations
+func estimateBPM(keyframes []Keyframe) float64 {
+	if len(keyframes) < 2 {
+		fmt.Println("Need at least two keyframes to estimate BPM.")
+		return 0
+	}
+
+	// Calculate intervals between consecutive keyframes
+	var totalInterval float64
+	for i := 1; i < len(keyframes); i++ {
+		interval := keyframes[i].Time - keyframes[i-1].Time
+		totalInterval += interval
+	}
+
+	// Compute average interval
+	averageInterval := totalInterval / float64(len(keyframes)-1)
+
+	// Initial BPM estimation (assuming the interval is per beat)
+	initialEstimate := 60 / averageInterval
+
+	// Adjust for 4/4 rhythm if necessary (considering common multipliers for beats per bar)
+	multipliers := []float64{1, 2, 4} // Represents single beat, 2 beats (half-note), and whole bar (4 beats) in 4/4 time
+	closestBPM := initialEstimate
+	for _, multiplier := range multipliers {
+		adjustedBPM := initialEstimate * multiplier
+		if adjustedBPM >= 50 && adjustedBPM <= 200 {
+			closestBPM = adjustedBPM
+			break
+		}
+	}
+
+	return closestBPM
 }
 
 func main() {
@@ -212,6 +247,9 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+
+	estimatedBPM := estimateBPM(keyframes)
+	fmt.Printf("Estimated original BPM based on keyframes: %.2f\n", estimatedBPM)
 
 	// outputPath should be the source video filename with a _sync<bpm> suffix.
 	originalVideoFilename := originalVideoPath[strings.LastIndex(originalVideoPath, "/")+1:]
