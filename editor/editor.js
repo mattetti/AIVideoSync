@@ -26,12 +26,6 @@ document.addEventListener('DOMContentLoaded', function() {
   const addKeyframeButton = document.getElementById('addKeyframe');
   const saveKeyframesButton = document.getElementById('saveKeyframes');
 
-  video.onloadedmetadata = () => {
-    // Update video duration once metadata is loaded
-    videoDuration = video.duration;
-    resizeCanvas();
-  };
-
   function resizeCanvas() {
     // Match canvas width to video's current width
     const width = video.offsetWidth;
@@ -106,16 +100,45 @@ document.addEventListener('DOMContentLoaded', function() {
   });
 
   dropZone.addEventListener('drop', (event) => {
-      event.stopPropagation();
-      event.preventDefault();
-      const files = event.dataTransfer.files;
-      if (files.length) {
-          const file = files[0];
-          video.src = URL.createObjectURL(file);
-          video.style.display = 'block';
-          videoFileName = file.name.substring(0, file.name.lastIndexOf('.')) || file.name; // Remove extension
-      }
+    event.stopPropagation();
+    event.preventDefault();
+    const files = event.dataTransfer.files;
+    if (files.length) {
+        const file = files[0];
+        if (file.type === "application/json") {
+            // Handle JSON file
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const json = JSON.parse(e.target.result);
+                    // Validate the JSON structure
+                    if (Array.isArray(json) && json.every(kf => 'time' in kf)) {
+                        keyframes = json; // Load the keyframes
+                        drawKeyframes(); // Redraw the canvas with new keyframes
+                        console.log("Keyframes loaded from JSON.");
+                    } else {
+                        console.error("Invalid JSON structure for keyframes.");
+                    }
+                } catch (error) {
+                    console.error("Error parsing JSON:", error);
+                }
+            };
+            reader.readAsText(file);
+        } else if (file.type.startsWith('video')) {
+            // Handle video file
+            video.src = URL.createObjectURL(file);
+            video.style.display = 'block';
+            videoFileName = file.name.substring(0, file.name.lastIndexOf('.')) || file.name; // Remove extension
+            video.onloadedmetadata = () => {
+                videoDuration = video.duration;
+                resizeCanvas();
+            };
+            // Update drop zone text
+            dropZone.innerHTML = "Drop a new video or a keyframe JSON file here";
+        }
+    }
   });
+
 
   addKeyframeButton.addEventListener('click', () => {
       const currentTime = video.currentTime;
