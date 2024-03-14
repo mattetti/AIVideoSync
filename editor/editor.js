@@ -25,6 +25,7 @@ document.addEventListener('DOMContentLoaded', function() {
   const ctx = canvas.getContext('2d');
   const addKeyframeButton = document.getElementById('addKeyframe');
   const saveKeyframesButton = document.getElementById('saveKeyframes');
+  const clearKeyframesButton = document.getElementById('clearKeyframes');
 
   function resizeCanvas() {
     // Match canvas width to video's current width
@@ -148,7 +149,9 @@ document.addEventListener('DOMContentLoaded', function() {
   });
 
   saveKeyframesButton.addEventListener('click', () => {
-      const blob = new Blob([JSON.stringify(keyframes, null, 2)], {type : 'application/json'});
+      // Create a new array without the 'x' property for each keyframe
+      const keyframesToSave = keyframes.map(({x, ...rest}) => rest);
+      const blob = new Blob([JSON.stringify(keyframesToSave, null, 2)], {type : 'application/json'});
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -157,4 +160,11 @@ document.addEventListener('DOMContentLoaded', function() {
       a.click();
       document.body.removeChild(a);
   });
+
+  clearKeyframesButton.addEventListener('click', () => {
+      keyframes = [];
+      drawKeyframes();
+      console.log("Keyframes cleared.");
+  });
+
 });
