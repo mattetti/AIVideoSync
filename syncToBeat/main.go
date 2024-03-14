@@ -196,9 +196,12 @@ func addPulseToVideo(inputVideoPath string, bpm float64, audioPath string, outpu
 	if audioPath != "" {
 		whiteInputIndex = 2 // Adjust index if audio is present
 	}
+	pulseDuration := 0.1 // Duration of the pulse in seconds
+
 	filterComplex = fmt.Sprintf(
-		"[0:v]format=yuva420p[base]; [base][%d:v]blend=all_mode=addition:all_opacity=1:enable='if(lt(mod(t,%[2]f),0.2),1,0)'[output]",
-		whiteInputIndex, beatDurationInSeconds,
+		"[0:v]format=yuva420p[base]; "+
+			"[base][%d:v]blend=all_mode=overlay:all_opacity=1:enable='if(lt(mod(t,%[2]f),%[3]f),1,0)'[output]",
+		whiteInputIndex, beatDurationInSeconds, pulseDuration,
 	)
 
 	cmdArgs := []string{"-y"}
