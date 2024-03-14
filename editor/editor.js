@@ -1,3 +1,17 @@
+function showTooltip(x, y, text) {
+  const tooltip = document.getElementById('tooltip');
+  tooltip.innerText = text;
+  tooltip.style.left = `${x}px`;
+  tooltip.style.top = `${y + 20}px`; // Position slightly below the cursor
+  tooltip.style.display = 'block';
+}
+
+function hideTooltip() {
+  const tooltip = document.getElementById('tooltip');
+  tooltip.style.display = 'none';
+}
+
+
 document.addEventListener('DOMContentLoaded', function() {
   let keyframes = [];
   let videoFileName = ''; // Store the video filename
@@ -50,6 +64,25 @@ document.addEventListener('DOMContentLoaded', function() {
     });
     if (clickedKeyframe) {
         video.currentTime = clickedKeyframe.time;
+    }
+  });
+
+  canvas.addEventListener('mousemove', (event) => {
+    const rect = canvas.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+    const isOverKeyframe = keyframes.some(kf => {
+        return Math.sqrt((kf.x - x) ** 2 + ((canvas.height / 2) - y) ** 2) <= 5;
+    });
+
+    canvas.style.cursor = isOverKeyframe ? 'pointer' : 'default';
+
+    if (isOverKeyframe) {
+        // Show tooltip
+        showTooltip(event.clientX, event.clientY, "Left-click to jump, Right-click to delete");
+    } else {
+        // Hide tooltip
+        hideTooltip();
     }
   });
 
