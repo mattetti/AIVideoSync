@@ -23,6 +23,12 @@ type Keyframe struct {
 	Time float64 `json:"time"`
 }
 
+// VideoDimensions holds the width and height of a video.
+type VideoDimensions struct {
+	Width  int
+	Height int
+}
+
 // readKeyframes reads the keyframe data from a JSON file.
 func readKeyframes(filePath string) ([]Keyframe, error) {
 	var keyframes []Keyframe
@@ -69,6 +75,51 @@ func getVideoDuration(videoPath string) (float64, error) {
 	}
 
 	return duration, nil
+}
+
+// getVideoDimensions retrieves the width and height of the given video file.
+func getVideoDimensions(videoPath string) (VideoDimensions, error) {
+	ffprobePath, err := checkFFprobeAvailable()
+	if err != nil {
+		return VideoDimensions{}, fmt.Errorf("ffprobe is not available: %v", err)
+	}
+
+	// Construct the ffprobe command to get the video width and height
+	cmdArgs := []string{
+		"-v", "error",
+		"-select_streams", "v:0", // Select the first video stream
+		"-show_entries", "stream=width,height",
+		"-of", "json", // Output format as JSON for easier parsing
+		videoPath,
+	}
+
+	cmd := exec.Command(ffprobePath, cmdArgs...)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Run(); err != nil {
+		return VideoDimensions{}, fmt.Errorf("ffprobe error: %v", err)
+	}
+
+	// Define a struct to unmarshal the JSON output into
+	var probeOutput struct {
+		Streams []struct {
+			Width  int `json:"width"`
+			Height int `json:"height"`
+		} `json:"streams"`
+	}
+
+	if err := json.Unmarshal(out.Bytes(), &probeOutput); err != nil {
+		return VideoDimensions{}, fmt.Errorf("failed to parse video dimensions: %v", err)
+	}
+
+	if len(probeOutput.Streams) == 0 {
+		return VideoDimensions{}, fmt.Errorf("no video streams found")
+	}
+
+	return VideoDimensions{
+		Width:  probeOutput.Streams[0].Width,
+		Height: probeOutput.Streams[0].Height,
+	}, nil
 }
 
 // checkFFmpegAvailable checks if FFmpeg is installed and available in the PATH.
@@ -121,8 +172,7 @@ func checkFFprobeAvailable() (string, error) {
 	return ffprobePath, nil
 }
 
-// Adds a white pulse to a video based on the specified BPM and saves the result to a new file.
-func addPulseToVideo(inputVideoPath string, bpm float64, outputVideoPath string) error {
+func addPulseToVideo(inputVideoPath string, bpm float64, audioPath string, outputVideoPath string) error {
 	ffmpegPath, err := checkFFmpegAvailable()
 	if err != nil {
 		return fmt.Errorf("ffmpeg is not available: %v", err)
@@ -133,35 +183,50 @@ func addPulseToVideo(inputVideoPath string, bpm float64, outputVideoPath string)
 		return fmt.Errorf("failed to get video duration: %v", err)
 	}
 
-	beatDuration := 60 / bpm
-	numBeats := int(totalDuration / beatDuration)
-
-	// Generate the base filter for the white color source
-	baseFilter := fmt.Sprintf("color=c=white:s=1920x1080:r=25:d=%f[white];", totalDuration)
-
-	// Initialize the filter complex string with the base filter
-	filterComplex := baseFilter
-
-	// Loop to generate overlay filters for each beat
-	for i := 0; i <= numBeats; i++ {
-		start := float64(i) * beatDuration
-		// Create overlay filters for each beat
-		filterComplex += fmt.Sprintf("[0:v][white]overlay='if(between(t,%f,%f),1,0)':shortest=1[v%d];", start, start+0.2, i)
+	dimensions, err := getVideoDimensions(inputVideoPath)
+	if err != nil {
+		return fmt.Errorf("Failed to get video dimensions: %v", err)
 	}
 
-	// The final video stream label needs to be adjusted according to the last overlay filter applied
-	finalStreamLabel := fmt.Sprintf("[v%d]", numBeats)
+	beatDurationInSeconds := 60.0 / bpm
 
-	cmdArgs := []string{
-		"-y",
-		"-i", inputVideoPath,
+	// Correctly configure filter complex depending on whether an audio file is provided
+	var filterComplex string
+	whiteInputIndex := 1
+	if audioPath != "" {
+		whiteInputIndex = 2 // Adjust index if audio is present
+	}
+	filterComplex = fmt.Sprintf(
+		"[0:v]format=yuva420p[base]; [base][%d:v]blend=all_mode=addition:all_opacity=1:enable='if(lt(mod(t,%[2]f),0.2),1,0)'[output]",
+		whiteInputIndex, beatDurationInSeconds,
+	)
+
+	cmdArgs := []string{"-y"}
+
+	cmdArgs = append(cmdArgs, "-i", inputVideoPath)
+
+	if audioPath != "" {
+		cmdArgs = append(cmdArgs, "-i", audioPath)
+	}
+
+	cmdArgs = append(cmdArgs,
+		"-f", "lavfi", "-i", fmt.Sprintf("color=c=white:s=%dx%d:d=%f:r=25", dimensions.Width, dimensions.Height, totalDuration),
 		"-filter_complex", filterComplex,
-		"-map", finalStreamLabel,
+		"-map", "[output]",
+	)
+
+	if audioPath != "" {
+		cmdArgs = append(cmdArgs, "-map", "1:a") // Correctly map audio stream
+		cmdArgs = append(cmdArgs, "-c:a", "copy")
+	}
+
+	cmdArgs = append(cmdArgs,
 		"-c:v", "libx264",
 		"-preset", "medium",
 		"-crf", "22",
+		"-t", fmt.Sprintf("%f", totalDuration),
 		outputVideoPath,
-	}
+	)
 
 	cmd := exec.Command(ffmpegPath, cmdArgs...)
 	cmd.Stdout = os.Stdout
@@ -373,8 +438,8 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// outputPulsePath := fmt.Sprintf("pulsed_%s_sync%.0f.%s", originalVideoFilename, bpm, originalExtension)
-	// if err := addPulseToVideo(outputPath, bpm, outputPulsePath); err != nil {
-	// 	log.Fatalf("Failed to add pulse to video: %v", err)
-	// }
+	outputPulsePath := fmt.Sprintf("%s_syncPulsed%.0f.%s", originalVideoFilename, bpm, originalExtension)
+	if err := addPulseToVideo(outputPath, bpm, audioPath, outputPulsePath); err != nil {
+		log.Fatalf("Failed to add pulse to video: %v", err)
+	}
 }
