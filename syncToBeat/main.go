@@ -185,7 +185,7 @@ func addPulseToVideo(inputVideoPath string, bpm float64, audioPath string, outpu
 
 	dimensions, err := getVideoDimensions(inputVideoPath)
 	if err != nil {
-		return fmt.Errorf("Failed to get video dimensions: %v", err)
+		return fmt.Errorf("failed to get video dimensions: %v", err)
 	}
 
 	beatDurationInSeconds := 60.0 / bpm
@@ -205,7 +205,6 @@ func addPulseToVideo(inputVideoPath string, bpm float64, audioPath string, outpu
 	)
 
 	cmdArgs := []string{"-y"}
-
 	cmdArgs = append(cmdArgs, "-i", inputVideoPath)
 
 	if audioPath != "" {
@@ -232,9 +231,12 @@ func addPulseToVideo(inputVideoPath string, bpm float64, audioPath string, outpu
 	)
 
 	cmd := exec.Command(ffmpegPath, cmdArgs...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	if Debug {
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+	}
 
+	fmt.Printf("Adding pulse to video at %s\n", inputVideoPath)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("error running ffmpeg: %v", err)
 	}
@@ -317,6 +319,8 @@ func ffmpegAdjustSpeed(bpm float64, originalVideoPath string, audioPath string, 
 		log.Println("Running FFmpeg with arguments:", cmdArgs)
 	}
 
+	fmt.Printf("Adjusting speed of video %s to match BPM: %.0f\n", originalVideoPath, bpm)
+
 	// Create the FFmpeg command using the found path and assembled arguments
 	cmd := exec.Command(ffmpegPath, cmdArgs...)
 
@@ -331,8 +335,14 @@ func ffmpegAdjustSpeed(bpm float64, originalVideoPath string, audioPath string, 
 		log.Printf("Error running FFmpeg with arguments: %s - %v\n", cmdArgs, err)
 		return err
 	}
+	fmt.Printf("Speed adjusted video saved to %s\n", outputPath)
 
 	if audioPath != "" {
+		totalDuration, err := getVideoDuration(outputPath)
+		if err != nil {
+			return fmt.Errorf("failed to get video duration: %v", err)
+		}
+
 		cmdArgs = []string{
 			"-y",
 			"-i", outputPath, // Add the video input
@@ -342,15 +352,17 @@ func ffmpegAdjustSpeed(bpm float64, originalVideoPath string, audioPath string, 
 			"-strict", "experimental", // This may be required for certain audio codecs/formats
 			"-map", "0:v:0", // Map the video stream from the first input (the modified video)
 			"-map", "1:a:0", // Map the audio stream from the second input (the provided audio file)
+			"-t", fmt.Sprintf("%f", totalDuration),
 		}
 
 		withAudioOutputPath := outputPath
 		dir := filepath.Dir(withAudioOutputPath)
 		filename := filepath.Base(withAudioOutputPath)
 		filename = strings.TrimSuffix(filename, filepath.Ext(filename))
-		withAudioOutputPath = filepath.Join(dir, "audio_"+filename+filepath.Ext(withAudioOutputPath))
+		withAudioOutputPath = filepath.Join(dir, filename+"_audio_"+filepath.Ext(withAudioOutputPath))
 		cmdArgs = append(cmdArgs, withAudioOutputPath)
 
+		fmt.Printf("Injecting audio from %s into the video at %s\n", audioPath, outputPath)
 		// Then execute the FFmpeg command as before
 		cmd := exec.Command(ffmpegPath, cmdArgs...)
 		if Debug {
@@ -362,6 +374,58 @@ func ffmpegAdjustSpeed(bpm float64, originalVideoPath string, audioPath string, 
 			fmt.Printf("Error running FFmpeg (injecting audio): %v\n", err)
 			return err
 		}
+	}
+
+	return nil
+}
+
+func addTextOverlay(text string, inputVideoPath string) error {
+	ffmpegPath, err := checkFFmpegAvailable()
+	if err != nil {
+		return fmt.Errorf("ffmpeg is not available: %v", err)
+	}
+
+	ext := filepath.Ext(inputVideoPath)
+	outputVideoPath := "tempOutput" + ext
+
+	// Define the drawtext filter settings
+	fontColor := "white"
+	fontSize := "24"
+	x := "10"                            // 10 pixels from the left
+	y := "h-th-10"                       // 10 pixels from the bottom edge of the video
+	fontFile := "fonts/Roboto-Light.ttf" // Specify the path to your font file
+
+	drawText := fmt.Sprintf(
+		"drawtext=text='%s':fontcolor=%s:fontsize=%s:x=%s:y=%s:fontfile='%s'",
+		text, fontColor, fontSize, x, y, fontFile,
+	)
+
+	// Construct the FFmpeg command with the drawtext filter
+	cmdArgs := []string{
+		"-y",
+		"-i", inputVideoPath,
+		"-vf", drawText,
+		"-codec:a", "copy", // Copy audio without re-encoding, if present
+		outputVideoPath,
+	}
+
+	fmt.Printf("Adding text overlay to video at %s\n", inputVideoPath)
+
+	cmd := exec.Command(ffmpegPath, cmdArgs...)
+	if Debug {
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+	}
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("error running ffmpeg: %v", err)
+	}
+	// delete the original file and rename the new file
+	if err := os.Remove(inputVideoPath); err != nil {
+		return fmt.Errorf("text overlay error while replacing the original file: %v", err)
+	}
+	if err := os.Rename(outputVideoPath, inputVideoPath); err != nil {
+		return fmt.Errorf("text overlay error while renaming new file: %v", err)
 	}
 
 	return nil
@@ -431,18 +495,29 @@ func main() {
 	estimatedBPM := estimateBPM(keyframes)
 	fmt.Printf("Estimated original BPM based on keyframes: %.2f\n", estimatedBPM)
 
-	// outputPath should be the source video filename with a _sync<bpm> suffix.
-	originalVideoFilename := originalVideoPath[strings.LastIndex(originalVideoPath, "/")+1:]
-	originalExtension := originalVideoFilename[strings.LastIndex(originalVideoFilename, ".")+1:]
-	outputPath := fmt.Sprintf("%s_sync%.0f.%s", originalVideoFilename, bpm, originalExtension)
+	dir := filepath.Dir(originalVideoPath)
+	filename := filepath.Base(originalVideoPath)
+	extension := filepath.Ext(originalVideoPath)
+	nameWithoutExt := filename[:len(filename)-len(extension)]
+
+	// Generate the new filename with BPM included and reconstruct the full path.
+	newFilename := fmt.Sprintf("%s_sync%.0f%s", nameWithoutExt, bpm, extension)
+	outputPath := filepath.Join(dir, newFilename)
 	err = ffmpegAdjustSpeed(bpm, originalVideoPath, audioPath, outputPath, keyframes)
 	if err != nil {
 		fmt.Println("Failed to sync to beat:", err)
 		log.Fatal(err)
 	}
 
-	outputPulsePath := fmt.Sprintf("%s_syncPulsed%.0f.%s", originalVideoFilename, bpm, originalExtension)
+	outputPulsePath := fmt.Sprintf("%s_debug%.0f%s", nameWithoutExt, bpm, extension)
 	if err := addPulseToVideo(outputPath, bpm, audioPath, outputPulsePath); err != nil {
 		log.Fatalf("Failed to add pulse to video: %v", err)
 	}
+	addTextOverlay(fmt.Sprintf("syncd @ %.0f BPM", bpm), outputPulsePath)
+
+	outputNotSyncedPath := fmt.Sprintf("%s_not_synced%s", nameWithoutExt, extension)
+	if err := addPulseToVideo(originalVideoPath, estimatedBPM, audioPath, outputNotSyncedPath); err != nil {
+		log.Fatalf("Failed to add pulse to original video: %v", err)
+	}
+	addTextOverlay(fmt.Sprintf("unsyncd - %.0f BPM", bpm), outputNotSyncedPath)
 }
